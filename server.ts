@@ -556,7 +556,10 @@ async function startServer() {
   // Vite middleware in dev / static in prod
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      // The custom WebSocket server owns the HTTP server. Vite's HMR socket
+      // must not create a second listener (which causes EADDRINUSE and leaves
+      // the room client stuck in “Menghubungkan...” ).
+      server: { middlewareMode: true, hmr: false },
       appType: 'spa',
     });
     app.use(vite.middlewares);
