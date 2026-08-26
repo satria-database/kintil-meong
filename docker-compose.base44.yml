@@ -1,0 +1,13 @@
+services:
+  app:
+    image: node:22
+    working_dir: /app
+    command: sh -c "npm install && npm run dev"
+    environment:
+      - NODE_ENV=development
+      - CHOKIDAR_USEPOLLING=true
+      - BASE44_PUBLIC_HOST_SUFFIX=${BASE44_PUBLIC_HOST_SUFFIX}
+    volumes:
+      - .:/app
+    ports:
+      - "3000:3000"
