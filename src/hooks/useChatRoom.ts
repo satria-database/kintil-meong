@@ -16,6 +16,7 @@ import {
   decryptPayload,
 } from '../lib/crypto';
 import { soundManager } from '../lib/sound';
+import { PollingTransport } from '../lib/pollingTransport';
 
 interface UseChatRoomOptions {
   user: User | null;
@@ -51,6 +52,8 @@ export function useChatRoom({
   const typingTimeoutMapRef = useRef<Map<string, any>>(new Map());
   const cryptoKeyRef = useRef<CryptoKey | null>(null);
   const passkeyRef = useRef<string>(passkey);
+  const wsFailCountRef = useRef(0);
+  const usePollingRef = useRef(false);
 
   // Initialize or update cryptographic key whenever passkey changes
   useEffect(() => {
@@ -149,26 +152,33 @@ export function useChatRoom({
     if (!user || !roomId || !passkey) return;
 
     let isUnmounted = false;
+    wsFailCountRef.current = 0;
+    usePollingRef.current = false;
 
     function connect() {
       if (isUnmounted) return;
 
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const wsUrl = `${protocol}//${window.location.host}/ws`;
+      let transport: any;
 
-      const ws = new WebSocket(wsUrl);
-      wsRef.current = ws;
+      if (usePollingRef.current) {
+        transport = new PollingTransport(roomId, roomName || `Ruang #${roomId.slice(0, 6)}`, user);
+      } else {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${protocol}//${window.location.host}/ws`;
+        transport = new WebSocket(wsUrl);
+      }
+      wsRef.current = transport;
 
-      ws.onopen = () => {
+      transport.onopen = () => {
         if (isUnmounted) {
-          ws.close();
+          transport.close();
           return;
         }
         setIsConnected(true);
         setIsReconnecting(false);
 
-        // Send join event
-        ws.send(
+        // Send join event (no-op for polling transport — already joined)
+        transport.send(
           JSON.stringify({
             type: 'join',
             roomId,
@@ -177,16 +187,16 @@ export function useChatRoom({
           })
         );
 
-        // Heartbeat ping
+        // Heartbeat ping (no-op for polling transport)
         if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
         pingIntervalRef.current = setInterval(() => {
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: 'ping' }));
+          if (transport.readyState === WebSocket.OPEN) {
+            transport.send(JSON.stringify({ type: 'ping' }));
           }
         }, 20000);
       };
 
-      ws.onmessage = async (event) => {
+      transport.onmessage = async (event) => {
         try {
           const data: WSServerEvent = JSON.parse(event.data);
 
@@ -208,9 +218,9 @@ export function useChatRoom({
                 .filter(m => !m.isSystem && m.senderId !== user.id && !m.isDeleted)
                 .map(m => m.id);
 
-              if (unreadFromOthers.length > 0 && ws.readyState === WebSocket.OPEN) {
+              if (unreadFromOthers.length > 0 && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
                 const now = Date.now();
-                ws.send(
+                wsRef.current.send(
                   JSON.stringify({
                     type: 'delivery_ack',
                     roomId,
@@ -219,7 +229,7 @@ export function useChatRoom({
                     deliveredAt: now,
                   })
                 );
-                ws.send(
+                wsRef.current.send(
                   JSON.stringify({
                     type: 'read_receipt',
                     roomId,
@@ -372,9 +382,9 @@ export function useChatRoom({
               });
 
               // If message is from someone else, acknowledge delivery and read immediately
-              if (decMsg.senderId !== user.id && !decMsg.isSystem && ws.readyState === WebSocket.OPEN) {
+              if (decMsg.senderId !== user.id && !decMsg.isSystem && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
                 const now = Date.now();
-                ws.send(
+                wsRef.current.send(
                   JSON.stringify({
                     type: 'delivery_ack',
                     roomId,
@@ -383,7 +393,7 @@ export function useChatRoom({
                     deliveredAt: now,
                   })
                 );
-                ws.send(
+                wsRef.current.send(
                   JSON.stringify({
                     type: 'read_receipt',
                     roomId,
@@ -524,21 +534,35 @@ export function useChatRoom({
         }
       };
 
-      ws.onclose = () => {
+      transport.onclose = () => {
         setIsConnected(false);
         if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
 
         if (!isUnmounted) {
           setIsReconnecting(true);
+
+          // After 2 failed WebSocket attempts, switch to HTTP polling
+          if (!usePollingRef.current) {
+            wsFailCountRef.current++;
+            if (wsFailCountRef.current >= 2) {
+              usePollingRef.current = true;
+            }
+          }
+
           reconnectTimeoutRef.current = setTimeout(() => {
             connect();
           }, 3000);
         }
       };
 
-      ws.onerror = () => {
-        ws.close();
+      transport.onerror = () => {
+        transport.close();
       };
+
+      // PollingTransport requires an explicit connect() call; WebSocket auto-connects
+      if (usePollingRef.current) {
+        transport.connect();
+      }
     }
 
     connect();
