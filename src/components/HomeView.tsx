@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { User, SavedRoom } from '../types';
 import { generateRandomPasskey } from '../lib/crypto';
 import { 
@@ -72,6 +72,12 @@ export const HomeView: React.FC<HomeViewProps> = ({
   const [joinRoomId, setJoinRoomId] = useState(initialRoomId || '');
   const [joinPasskey, setJoinPasskey] = useState(initialPasskey || '');
   const [error, setError] = useState('');
+
+  // URL invite data arrives after the first render, so keep the join form in sync.
+  useEffect(() => {
+    if (initialRoomId) setJoinRoomId(initialRoomId);
+    if (initialPasskey) setJoinPasskey(initialPasskey);
+  }, [initialRoomId, initialPasskey]);
 
   const handleRegenerateCreate = () => {
     setCreateRoomId('room-' + Math.random().toString(36).substring(2, 8));

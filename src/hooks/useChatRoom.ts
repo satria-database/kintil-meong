@@ -192,6 +192,11 @@ export function useChatRoom({
 
           switch (data.type) {
             case 'room_init': {
+              // The room is truly ready only after the server accepts the join.
+              // This also prevents a reconnecting state from lingering after the
+              // socket was reopened during the room setup transition.
+              setIsConnected(true);
+              setIsReconnecting(false);
               setCurrentRoomName(data.roomName || `Ruang #${roomId.slice(0, 6)}`);
               setParticipants(data.participants);
               setPinnedMessageId(data.pinnedMessageId || null);
