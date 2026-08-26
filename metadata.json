@@ -1,0 +1,6 @@
+{
+  "name": "RuangObrol Encrypted Chat",
+  "description": "Aplikasi chat room real-time aman dengan enkripsi ujung-ke-ujung (E2EE), invite link, balas pesan, mention pengguna, dan pengiriman file.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
