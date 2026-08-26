@@ -46,8 +46,10 @@ export function useChatRoom({
   const [disappearingTimer, setDisappearingTimerState] = useState<number>(0);
 
   const wsRef = useRef<WebSocket | null>(null);
-  const reconnectTimeoutRef = useRef<any>(null);
-  const pingIntervalRef = useRef<any>(null);
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const joinTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const reconnectAttemptRef = useRef(0);
   const typingTimeoutMapRef = useRef<Map<string, any>>(new Map());
   const cryptoKeyRef = useRef<CryptoKey | null>(null);
   const passkeyRef = useRef<string>(passkey);
@@ -164,8 +166,9 @@ export function useChatRoom({
           ws.close();
           return;
         }
-        setIsConnected(true);
-        setIsReconnecting(false);
+        // A TCP/WebSocket open is not enough: wait for the server's room_init.
+        setIsConnected(false);
+        setIsReconnecting(true);
 
         // Send join event
         ws.send(
@@ -176,6 +179,13 @@ export function useChatRoom({
             user,
           })
         );
+
+        if (joinTimeoutRef.current) clearTimeout(joinTimeoutRef.current);
+        joinTimeoutRef.current = setTimeout(() => {
+          if (wsRef.current === ws && ws.readyState === WebSocket.OPEN && !isUnmounted) {
+            ws.close();
+          }
+        }, 10000);
 
         // Heartbeat ping
         if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
@@ -195,6 +205,9 @@ export function useChatRoom({
               // The room is truly ready only after the server accepts the join.
               // This also prevents a reconnecting state from lingering after the
               // socket was reopened during the room setup transition.
+              if (wsRef.current !== ws || isUnmounted) break;
+              if (joinTimeoutRef.current) clearTimeout(joinTimeoutRef.current);
+              reconnectAttemptRef.current = 0;
               setIsConnected(true);
               setIsReconnecting(false);
               setCurrentRoomName(data.roomName || `Ruang #${roomId.slice(0, 6)}`);
@@ -530,14 +543,16 @@ export function useChatRoom({
       };
 
       ws.onclose = () => {
+        if (wsRef.current !== ws) return;
         setIsConnected(false);
+        setIsReconnecting(!isUnmounted);
         if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
+        if (joinTimeoutRef.current) clearTimeout(joinTimeoutRef.current);
 
         if (!isUnmounted) {
-          setIsReconnecting(true);
-          reconnectTimeoutRef.current = setTimeout(() => {
-            connect();
-          }, 3000);
+          const delay = Math.min(3000 * 2 ** reconnectAttemptRef.current, 15000);
+          reconnectAttemptRef.current += 1;
+          reconnectTimeoutRef.current = setTimeout(connect, delay);
         }
       };
 
@@ -552,8 +567,10 @@ export function useChatRoom({
       isUnmounted = true;
       if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
       if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
+      if (joinTimeoutRef.current) clearTimeout(joinTimeoutRef.current);
       if (wsRef.current) {
         wsRef.current.close();
+        wsRef.current = null;
       }
     };
   }, [user, roomId, passkey, roomName, decryptSingleMessage, onMentioned]);
