@@ -16,6 +16,7 @@ import {
   decryptPayload,
 } from '../lib/crypto';
 import { soundManager } from '../lib/sound';
+import { resolveWsUrl } from '../lib/wsUrl';
 
 interface UseChatRoomOptions {
   user: User | null;
@@ -153,8 +154,7 @@ export function useChatRoom({
     function connect() {
       if (isUnmounted) return;
 
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const wsUrl = `${protocol}//${window.location.host}/ws`;
+      const wsUrl = resolveWsUrl();
 
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
