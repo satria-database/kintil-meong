@@ -16,7 +16,7 @@ import {
   decryptPayload,
 } from '../lib/crypto';
 import { soundManager } from '../lib/sound';
-import { resolveWsUrl } from '../lib/wsUrl';
+import { resolveWsUrl, isUsingWsUrlOverride, clearWsUrlOverride } from '../lib/wsUrl';
 
 interface UseChatRoomOptions {
   user: User | null;
@@ -145,18 +145,51 @@ export function useChatRoom({
     []
   );
 
+  // Keep latest values in refs so the socket never has to be torn down when a
+  // non-connection prop (room name, passkey, callback identity) changes.
+  const userRef = useRef(user);
+  const roomNameRef = useRef(roomName);
+  const onMentionedRef = useRef(onMentioned);
+  useEffect(() => {
+    userRef.current = user;
+    roomNameRef.current = roomName;
+    onMentionedRef.current = onMentioned;
+  }, [user, roomName, onMentioned]);
+
+  const hasPasskey = !!passkey;
+  const userId = user?.id;
+
   // Connect to WebSocket
   useEffect(() => {
-    if (!user || !roomId || !passkey) return;
+    if (!userId || !roomId || !hasPasskey) return;
 
     let isUnmounted = false;
+    let attempt = 0;
+    let hadSuccessfulOpen = false;
 
     function connect() {
       if (isUnmounted) return;
+      // Never stack sockets: drop any previous one first.
+      const previous = wsRef.current;
+      if (previous && previous.readyState !== WebSocket.CLOSED) {
+        previous.onopen = null;
+        previous.onmessage = null;
+        previous.onclose = null;
+        previous.onerror = null;
+        previous.close();
+      }
 
+      const usingOverride = isUsingWsUrlOverride();
       const wsUrl = resolveWsUrl();
 
-      const ws = new WebSocket(wsUrl);
+      let ws: WebSocket;
+      try {
+        ws = new WebSocket(wsUrl);
+      } catch {
+        if (usingOverride) clearWsUrlOverride();
+        scheduleReconnect();
+        return;
+      }
       wsRef.current = ws;
 
       ws.onopen = () => {
@@ -164,6 +197,8 @@ export function useChatRoom({
           ws.close();
           return;
         }
+        hadSuccessfulOpen = true;
+        attempt = 0;
         setIsConnected(true);
         setIsReconnecting(false);
 
@@ -172,7 +207,7 @@ export function useChatRoom({
           JSON.stringify({
             type: 'join',
             roomId,
-            roomName: roomName || `Ruang #${roomId.slice(0, 6)}`,
+            roomName: roomNameRef.current || `Ruang #${roomId.slice(0, 6)}`,
             user,
           })
         );
@@ -408,7 +443,7 @@ export function useChatRoom({
 
                 if (isMentioned) {
                   soundManager.playMentionSound();
-                  onMentioned?.(decMsg.senderName, decMsg.decryptedPayload?.text || '');
+                  onMentionedRef.current?.(decMsg.senderName, decMsg.decryptedPayload?.text || '');
                 } else {
                   soundManager.playIncomingMessageSound();
                   onIncomingMessage?.(decMsg);
@@ -530,15 +565,14 @@ export function useChatRoom({
       };
 
       ws.onclose = () => {
-        setIsConnected(false);
+        if (wsRef.current === ws) setIsConnected(false);
         if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
 
-        if (!isUnmounted) {
-          setIsReconnecting(true);
-          reconnectTimeoutRef.current = setTimeout(() => {
-            connect();
-          }, 3000);
-        }
+        // A configured override that never once connected is unusable on this
+        // domain — forget it so the next attempt uses the page's own origin.
+        if (!hadSuccessfulOpen && usingOverride) clearWsUrlOverride();
+
+        scheduleReconnect();
       };
 
       ws.onerror = () => {
@@ -546,17 +580,45 @@ export function useChatRoom({
       };
     }
 
+    function scheduleReconnect() {
+      if (isUnmounted) return;
+      setIsReconnecting(true);
+      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+      // Exponential backoff capped at 10s, so a briefly unreachable server
+      // recovers fast without hammering it.
+      const delay = Math.min(1000 * 2 ** attempt, 10000);
+      attempt += 1;
+      reconnectTimeoutRef.current = setTimeout(connect, delay);
+    }
+
+    function reconnectNow() {
+      if (isUnmounted) return;
+      const ws = wsRef.current;
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+      attempt = 0;
+      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+      connect();
+    }
+
+    function handleVisibility() {
+      if (document.visibilityState === 'visible') reconnectNow();
+    }
+
     connect();
+    window.addEventListener('online', reconnectNow);
+    document.addEventListener('visibilitychange', handleVisibility);
 
     return () => {
       isUnmounted = true;
+      window.removeEventListener('online', reconnectNow);
+      document.removeEventListener('visibilitychange', handleVisibility);
       if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
       if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
       if (wsRef.current) {
         wsRef.current.close();
       }
     };
-  }, [user, roomId, passkey, roomName, decryptSingleMessage, onMentioned]);
+  }, [userId, roomId, hasPasskey, decryptSingleMessage]);
 
   // Auto-remove expired self-destructing messages locally every second
   useEffect(() => {
