@@ -408,7 +408,7 @@ export default function App() {
             onSelectSavedRoom={handleSelectSavedRoom}
             onDeleteSavedRoom={handleDeleteSavedRoom}
             onGoToChat={() => setActiveNav('chat')}
-            defaultTab={activeNav === 'create' ? 'create' : 'join'}
+            defaultTab="create"
           />
         ) : (
           /* Active Chat Room View */
